@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+/* Base reset */
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Prevent text selection during gameplay */
+.game-container {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Smooth scrolling for modals */
+.howtoplay-overlay,
+.gameover-overlay {
+  -webkit-overflow-scrolling: touch;
+}
