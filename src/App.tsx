@@ -16,6 +16,7 @@ import {
   updateMatchSim,
   runMatchSelfTest,
 } from './utils/matchEngine';
+import { playGameSound, setGameAudioEnabled, unlockGameAudio } from './utils/gameAudio';
 import './App.css';
 
 const STORAGE_KEY = 'camsoccer_highscores';
@@ -36,6 +37,7 @@ interface Rect { x: number; y: number; w: number; h: number; }
 interface Panel { x: number; y: number; w: number; h: number; inner: Rect; }
 interface FieldMap { ppuX: number; ppuY: number; ox: number; oy: number; }
 interface Layout { tactical: Panel; broadcast: Panel; minimap: Panel; }
+type PointerMode = 'tactical' | 'minimap';
 
 interface InterestTarget {
   id: string;
@@ -49,6 +51,8 @@ interface InterestTarget {
 }
 
 interface Popup { x: number; y: number; text: string; color: string; born: number; life: number; big: boolean; }
+
+const needsCaptureLock = (target: InterestTarget) => target.kind !== 'ball' && target.kind !== 'pass';
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 // Equipación: los PORTEROS visten distinto (amarillo local / verde visitante)
@@ -127,13 +131,13 @@ function computeLayout(W: number, H: number): Layout {
     inner: { x: x + pad, y: y + titleH, w: Math.max(10, w - pad * 2), h: Math.max(10, h - titleH - pad) },
   });
 
-  if (W >= 760) {
-    // ARRIBA zoom cercano · MEDIO mapa grande · ABAJO control de cámara
+  if (W > 1100) {
+    // ARRIBA señal al aire · MEDIO mapa general · ABAJO control de precisión
     const topPad = 48;
     const botPad = 8;
     const avail = H - topPad - botPad;
-    const zoomH = Math.round(avail * 0.36);
-    const mapH = Math.round(avail * 0.40);
+    const zoomH = Math.round(avail * 0.44);
+    const mapH = Math.round(avail * 0.39);
     const ctrlH = avail - zoomH - mapH - gap * 2;
     const zoomY = topPad;
     const mapY = zoomY + zoomH + gap;
@@ -146,8 +150,8 @@ function computeLayout(W: number, H: number): Layout {
   }
   const topPad = 84;
   const avail = H - topPad - 6;
-  const zoomH = Math.round(avail * 0.34);
-  const mapH = Math.round(avail * 0.36);
+  const zoomH = Math.round(avail * 0.40);
+  const mapH = Math.round(avail * 0.38);
   const zoomY = topPad;
   const mapY = zoomY + zoomH + gap;
   const ctrlY = mapY + mapH + gap;
@@ -178,14 +182,15 @@ function App() {
   const [shake, setShake] = useState(0);
   const [cupResult, setCupResult] = useState<'gold' | 'silver' | 'bronze' | 'failed'>('failed');
   const [selfTest, setSelfTest] = useState<SelfTestResult | null>(null);
+  const [soundEnabled, setSoundEnabled] = useState(true);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<number>(0);
   const keysRef = useRef<Set<string>>(new Set());
-  // Multi-touch real: cada puntero se registra por id, así el joystick y el
-  // clic en el mapa central pueden usarse SIMULTÁNEAMENTE sin pisarse.
-  const pointersRef = useRef<Map<number, 'minimap' | 'tactical'>>(new Map());
+  // Multi-touch real: mapa y joystick pueden usarse a la vez sin pisarse.
+  // La señal superior es solo el monitor de programa: nunca recibe controles.
+  const pointersRef = useRef<Map<number, PointerMode>>(new Map());
   const matchRef = useRef<MatchSim | null>(null);
   const momentsRef = useRef<EngineMoment[]>([]);
   const incidentsRef = useRef<EngineIncident[]>([]);
@@ -199,6 +204,8 @@ function App() {
   const goalBannerRef = useRef<{ until: number; text: string } | null>(null);
   const streakRef = useRef(0);
   const replayReadyRef = useRef(false);
+  const captureLockRef = useRef<{ targetId: string | null; progress: number }>({ targetId: null, progress: 0 });
+  const replayedTargetsRef = useRef<Set<string>>(new Set());
   const scoreRef = useRef(0);
   const audienceRef = useRef(70);
   const comboRef = useRef(1);
@@ -212,6 +219,11 @@ function App() {
   const nextChargeAtRef = useRef(0);
   const endedRef = useRef(false);
   const joystickRef = useRef<{ x: number; y: number; dx: number; dy: number; active: boolean }>({ x: 0, y: 0, dx: 0, dy: 0, active: false });
+  // Posición visual suavizada: el motor puede cambiar de pose, pero la pelota nunca salta en pantalla.
+  const visualBallRef = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
+  const visualBallTimeRef = useRef(0);
+  const playerMotionRef = useRef<Map<number, { x: number; y: number; time: number }>>(new Map());
+  const visualPlayersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const minimapTouchRef = useRef<{ active: boolean }>({ active: false });
 
   useEffect(() => {
@@ -276,6 +288,7 @@ function App() {
   }, [currentLevel, saveHighScore, unlockedLevel]);
 
   const startGame = useCallback((levelIndex: number) => {
+    void unlockGameAudio().then(() => playGameSound('start'));
     const now = performance.now();
     matchRef.current = createMatchSim(now);
     momentsRef.current = [];
@@ -294,6 +307,12 @@ function App() {
     popupsRef.current = [];
     streakRef.current = 0;
     framingRef.current = 0;
+    captureLockRef.current = { targetId: null, progress: 0 };
+    visualBallRef.current = null;
+    visualBallTimeRef.current = 0;
+    playerMotionRef.current.clear();
+    visualPlayersRef.current.clear();
+    replayedTargetsRef.current = new Set();
     flashRef.current = { until: 0, color: '#fff' };
     followRef.current = { tx: 50, ty: 50, active: false };
     setCurrentLevel(levelIndex);
@@ -312,6 +331,13 @@ function App() {
     setTrackingFeedback(null);
     setPhase('playing');
   }, []);
+
+  const toggleSound = useCallback(() => {
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    setGameAudioEnabled(next);
+    if (next) void unlockGameAudio().then(() => playGameSound('capture'));
+  }, [soundEnabled]);
 
   const togglePause = useCallback(() => {
     if (phase === 'playing') {
@@ -359,50 +385,96 @@ function App() {
   const processBroadcastScore = useCallback((dt: number, now: number) => {
     const sim = matchRef.current;
     if (!sim) return;
-    const target = getTargets(now)[0];
-    if (!target) return;
-    const cam = cameraRef.current;
-    const inside = inFrame(target, cam, 1);
-    const q = inside ? framingQuality(target, cam) : 0;
-    framingRef.current = q;
-    const golden = q > 0.72;
-    replayReadyRef.current = inside && q > 0.4 && target.importance >= 1.8;
 
-    if (inside) {
+    const targets = getTargets(now);
+    if (!targets.length) return;
+
+    // La prioridad es una recomendación del director. El jugador puede ignorar
+    // una oportunidad especial y mantener el balón en antena sin ser castigado.
+    const priority = targets.find(target => target.kind === 'ball' || !target.caught) ?? targets[0];
+    const cam = cameraRef.current;
+    const target = targets.find(candidate => inFrame(candidate, cam, 1));
+    let q = 0;
+    replayReadyRef.current = false;
+
+    if (target) {
+      q = framingQuality(target, cam);
+      const golden = q > 0.72;
+      const lockable = needsCaptureLock(target);
+      const lock = captureLockRef.current;
+
+      if (lockable) {
+        if (lock.targetId !== target.id) {
+          lock.targetId = target.id;
+          lock.progress = target.caught ? 1 : 0;
+        }
+        if (target.caught) {
+          lock.progress = 1;
+        } else if (q > 0.28) {
+          // Un plano centrado se consolida antes: tocar un icono ya no basta.
+          lock.progress = clamp(lock.progress + dt * (0.55 + q * 1.5), 0, 1);
+        } else {
+          lock.progress = Math.max(0, lock.progress - dt * 0.9);
+        }
+      } else {
+        lock.targetId = target.id;
+        lock.progress = 0;
+      }
+
       const quality = 0.5 + q * 1.2 + (golden ? 0.3 : 0);
       scoreRef.current += dt * 34 * target.importance * comboRef.current * quality;
       audienceRef.current = clamp(audienceRef.current + dt * (2 + target.importance * 4) * (0.45 + q), 0, 100);
       comboRef.current = clamp(comboRef.current + dt * (0.2 + target.importance * 0.05) * (0.4 + q), 1, 6);
 
-      const oneShot = target.kind !== 'ball' && target.kind !== 'pass';
-      if (oneShot && !target.caught) {
+      if (lockable && !target.caught && lock.progress >= 1) {
         const bonus = Math.round(target.importance * 150 * (0.6 + q));
         scoreRef.current += bonus;
         audienceRef.current = clamp(audienceRef.current + target.importance * 4.5 * (0.5 + q), 0, 100);
         streakRef.current += 1;
+        target.caught = true;
         pushCapture(target.kind, bonus);
+        if (target.kind !== 'goal') playGameSound('capture');
         addPopup(target.x, target.y, `+${bonus}`, golden ? '#ffd166' : '#3ddc97', target.importance > 2.6);
-        if (golden) addPopup(target.x, target.y - 4, '¡PLANO DE ORO!', '#ffd166', true);
+        addPopup(target.x, target.y - 4, golden ? '¡PLANO DE ORO!' : 'PLANO CAPTURADO', golden ? '#ffd166' : '#3ddc97', golden);
         if (streakRef.current > 0 && streakRef.current % 3 === 0) addPopup(target.x, target.y - 8, `RACHA ×${streakRef.current}`, '#22d3ee', true);
-        if (target.importance > 3) { flashRef.current = { until: now + 160, color: target.color }; setShake(1); window.setTimeout(() => setShake(0), 130); }
-        momentsRef.current.forEach(m => { if (m.id === target.id) m.caught = true; });
-        incidentsRef.current.forEach(i => { if (i.id === target.id) i.caught = true; });
+        if (target.importance > 3) {
+          flashRef.current = { until: now + 160, color: target.color };
+          setShake(1);
+          window.setTimeout(() => setShake(0), 130);
+        }
+        momentsRef.current.forEach(moment => { if (moment.id === target.id) moment.caught = true; });
+        incidentsRef.current.forEach(incident => { if (incident.id === target.id) incident.caught = true; });
       }
-      setTrackingFeedback('good');
+
+      replayReadyRef.current = Boolean(
+        target.caught &&
+        target.importance >= 1.8 &&
+        q > 0.4 &&
+        !replayedTargetsRef.current.has(target.id)
+      );
+      setTrackingFeedback(target.id === priority.id ? 'good' : null);
     } else {
-      audienceRef.current = clamp(audienceRef.current - dt * (4.4 + target.importance * 1.8), 0, 100);
-      scoreRef.current = Math.max(0, scoreRef.current - dt * 5);
-      comboRef.current = clamp(comboRef.current - dt * 0.5, 1, 6);
+      const lock = captureLockRef.current;
+      lock.progress = Math.max(0, lock.progress - dt * 2.4);
+      if (lock.progress === 0) lock.targetId = null;
+
+      // Solo cae la audiencia cuando la señal no contiene ni balón ni evento.
+      audienceRef.current = clamp(audienceRef.current - dt * (3.2 + Math.min(priority.importance, 2.5) * 0.9), 0, 100);
+      scoreRef.current = Math.max(0, scoreRef.current - dt * 3);
+      comboRef.current = clamp(comboRef.current - dt * 0.45, 1, 6);
       if (streakRef.current > 2) addPopup(cam.x, cam.y, 'RACHA PERDIDA', '#ff4d6d', false);
       streakRef.current = 0;
-      setTrackingFeedback(target.importance > 2 ? 'bad' : null);
+      setTrackingFeedback('bad');
     }
 
+    framingRef.current = q;
     if (now - lastHudUpdateRef.current > 110) {
       setScore(Math.floor(scoreRef.current));
       setAudience(audienceRef.current);
       setCombo(comboRef.current);
-      setDirectorCue(target.label);
+      setDirectorCue(priority.kind !== 'ball' && priority.importance >= 1.8
+        ? `OPORTUNIDAD · ${priority.label}`
+        : priority.label);
       setFraming(q);
       setReplayReady(replayReadyRef.current);
       lastHudUpdateRef.current = now;
@@ -418,13 +490,21 @@ function App() {
     setSlowMoActive(true);
     slowMoEndRef.current = now + 2600;
     const cam = cameraRef.current;
-    const target = getTargets(now)[0];
-    if (!target) return;
-    const inside = inFrame(target, cam, 1);
-    const q = inside ? framingQuality(target, cam) : 0;
-    if (inside && target.importance >= 1.8 && q > 0.4) {
+    const target = getTargets(now).find(candidate => inFrame(candidate, cam, 1));
+    const q = target ? framingQuality(target, cam) : 0;
+    const validReplay = Boolean(
+      target?.caught &&
+      target.importance >= 1.8 &&
+      q > 0.4 &&
+      !replayedTargetsRef.current.has(target.id)
+    );
+
+    if (target && validReplay) {
       const perfect = q > 0.75;
       const bonus = Math.round(target.importance * (perfect ? 620 : 340) * (0.7 + q));
+      replayedTargetsRef.current.add(target.id);
+      replayReadyRef.current = false;
+      setReplayReady(false);
       scoreRef.current += bonus;
       audienceRef.current = clamp(audienceRef.current + (perfect ? 16 : 9), 0, 100);
       comboRef.current = clamp(comboRef.current + (perfect ? 1.1 : 0.6), 1, 6);
@@ -433,12 +513,14 @@ function App() {
       addPopup(target.x, target.y - 6, perfect ? '¡TOMA PERFECTA!' : '¡BUENA TOMA!', perfect ? '#ffd166' : '#3ddc97', true);
       addPopup(target.x, target.y, `+${bonus}`, perfect ? '#ffd166' : '#3ddc97', true);
       pushCapture(perfect ? 'TOMA PERFECTA' : 'REPETICIÓN', bonus);
+      playGameSound('replay');
       setShake(1);
       window.setTimeout(() => setShake(0), 180);
     } else {
       audienceRef.current = clamp(audienceRef.current - 7, 0, 100);
       comboRef.current = 1;
       streakRef.current = 0;
+      playGameSound('miss');
       addPopup(cam.x, cam.y, 'TOMA FALLIDA', '#ff4d6d', true);
     }
   }, [addPopup, getTargets, pushCapture, slowMoActive, slowMoCharges]);
@@ -674,7 +756,7 @@ function App() {
     drawBench(50, 64, 105.5, 'away', true);
   };
 
-  const drawPlayerTiny = (ctx: CanvasRenderingContext2D, m: FieldMap, p: { x: number; y: number; team: 'home' | 'away'; hasBall: boolean; role?: string }) => {
+  const drawPlayerTiny = (ctx: CanvasRenderingContext2D, m: FieldMap, p: { x: number; y: number; team: 'home' | 'away'; hasBall: boolean; role?: string; facingX?: number; facingY?: number }) => {
     const s = mMap(m, p.x, p.y);
     const gk = p.role === 'GK';
     const r = Math.max(2, m.ppuX * 0.9);
@@ -689,11 +771,20 @@ function App() {
     if (p.hasBall) { ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 1.5; ctx.strokeRect(Math.round(s.x - r - 2), Math.round(s.y - r * 2.6 - 2), Math.round(r * 2 + 4), Math.round(r * 3.4 + 4)); }
   };
 
-  const drawPlayerBig = (ctx: CanvasRenderingContext2D, m: FieldMap, p: { x: number; y: number; team: 'home' | 'away'; number?: number; hasBall: boolean; moving: boolean; phase: number; role?: string; celebrating?: boolean; sad?: boolean }) => {
+  const drawPlayerBig = (ctx: CanvasRenderingContext2D, m: FieldMap, p: { x: number; y: number; team: 'home' | 'away'; number?: number; hasBall: boolean; moving: boolean; phase: number; role?: string; celebrating?: boolean; sad?: boolean; facingX?: number; facingY?: number }) => {
     const sp = mMap(m, p.x, p.y);
     const gk = p.role === 'GK';
     const u = m.ppuX;
     const H = u * 3.4, w = H * 0.44;
+    // Dirección segura para la pose; evita que el monitor se congele si un
+    // sprite especial no recibe vector de movimiento.
+    const rawFx = p.facingX ?? 0;
+    const rawFy = p.facingY ?? -1;
+    const directionLength = Math.hypot(rawFx, rawFy) || 1;
+    const facingX = rawFx / directionLength;
+    const facingY = rawFy / directionLength;
+    const sideX = -facingY;
+    const sideY = facingX;
     
     // Si celebra, salta arriba y abajo de forma graciosa
     let jumpY = 0;
@@ -732,6 +823,13 @@ function App() {
     const shirtY = shortsY - shirtH;
     ctx.fillStyle = teamColor(p.team, gk);
     ctx.fillRect(x - w / 2, shirtY, w, shirtH);
+    // Panel frontal desplazado: se reconoce el pecho y el sentido de la mirada.
+    ctx.fillStyle = teamTrim(p.team, gk);
+    ctx.beginPath();
+    ctx.moveTo(x + facingX * w * 0.03, shirtY + shirtH * 0.12);
+    ctx.lineTo(x + facingX * w * 0.40 - sideX * w * 0.12, shirtY + shirtH * 0.50);
+    ctx.lineTo(x + facingX * w * 0.03, shirtY + shirtH * 0.88);
+    ctx.closePath(); ctx.fill();
     
     // Brazos alzados si celebra, o caídos si está triste
     const armW = Math.max(2, w * 0.24);
@@ -778,6 +876,9 @@ function App() {
     ctx.fillRect(x - headR, headCY - headR, headR * 2, headR * 2);
     ctx.fillStyle = p.team === 'home' ? '#3a2416' : '#20202a';
     ctx.fillRect(x - headR, headCY - headR, headR * 2, headR * 0.75);
+    // Nariz hacia el frente, pequeño pero legible en el plano de cerca.
+    ctx.fillStyle = '#f0c199';
+    ctx.fillRect(x + facingX * headR * 0.70 - headR * 0.10, headCY + facingY * headR * 0.16 - headR * 0.10, headR * 0.20, headR * 0.20);
     if (headR > 3.5) {
       ctx.fillStyle = '#1a1a1a';
       const eo = headR * 0.45, es = Math.max(1.5, headR * 0.28);
@@ -973,77 +1074,83 @@ function App() {
     ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.stroke();
   };
 
+  const drawFoulBig = (ctx: CanvasRenderingContext2D, m: FieldMap, foul: { x: number; y: number; label: string }, now: number) => {
+    const p = mMap(m, foul.x, foul.y);
+    const u = m.ppuX;
+    const pulse = Math.sin(now * 0.018);
+    // Jugador caído: cuerpo horizontal, piernas dobladas y pequeño temblor.
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath(); ctx.ellipse(p.x, p.y + u * 1.2, u * 2.4, u * 0.45, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.save(); ctx.translate(p.x, p.y + pulse * u * 0.08); ctx.rotate(-0.08 + pulse * 0.04);
+    ctx.fillStyle = '#e5484d'; ctx.fillRect(-u * 1.5, -u * 0.35, u * 2.8, u * 0.9);
+    ctx.fillStyle = '#2f6bed'; ctx.fillRect(u * 0.9, -u * 0.25, u * 1.2, u * 0.55);
+    ctx.fillStyle = '#f0c199'; ctx.fillRect(-u * 2.2, -u * 0.55, u * 0.85, u * 0.85);
+    ctx.fillStyle = '#23262e'; ctx.fillRect(-u * 0.4, u * 0.45, u * 0.55, u * 0.9); ctx.fillRect(u * 0.45, u * 0.45, u * 0.55, u * 0.8);
+    ctx.restore();
+    // Rival frenando y árbitro entrando a la jugada.
+    ctx.strokeStyle = '#ffd166'; ctx.lineWidth = Math.max(1.5, u * 0.16);
+    ctx.beginPath(); ctx.arc(p.x + u * 2.5, p.y - u * 1.2, u * 0.55 + pulse * u * 0.08, 0, Math.PI * 2); ctx.stroke();
+    const refereeX = foul.x - 7 + Math.sin(now * 0.004) * 2;
+    const refereeY = foul.y - 5 + Math.cos(now * 0.005) * 1.5;
+    drawPlayerBig(ctx, m, { x: refereeX, y: refereeY, team: 'home', hasBall: false, moving: true, phase: now * 0.05, facingX: foul.x - refereeX, facingY: foul.y - refereeY });
+    const rp = mMap(m, refereeX, refereeY - 3.9);
+    ctx.fillStyle = '#ffd166'; ctx.fillRect(rp.x - u * 0.28, rp.y - u * 0.8, u * 0.56, u * 1.6);
+    ctx.fillStyle = '#fff0b5'; ctx.font = 'bold 10px "Orbitron", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(foul.label.toUpperCase(), p.x, p.y - u * 4.4);
+  };
+
   const drawIncidentBig = (ctx: CanvasRenderingContext2D, m: FieldMap, inc: { x: number; y: number; kind: string; color: string }, now: number) => {
     const p = mMap(m, inc.x, inc.y);
     const u = m.ppuX;
     const run = Math.sin(now * 0.025);
 
     if (inc.kind === 'dog') {
-      // Sombra
-      ctx.fillStyle = 'rgba(0,0,0,0.3)';
-      ctx.beginPath(); ctx.ellipse(p.x, p.y + u * 1.4, u * 2.4, u * 0.5, 0, 0, Math.PI * 2); ctx.fill();
-      
-      // Polvo levantado por las patas
-      if (Math.random() < 0.4 && u > 3) {
-        ctx.fillStyle = 'rgba(255,255,255,0.45)';
-        ctx.beginPath();
-        ctx.arc(p.x - run * u * 2, p.y + u * 1.2 + (Math.random() - 0.5) * 3, u * 0.5, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Cuerpo del perro
-      ctx.fillStyle = inc.color;
-      ctx.fillRect(p.x - u * 2.2, p.y - u * 0.6, u * 4, u * 1.8);
-      // Cabeza
-      ctx.fillRect(p.x + u * 1.4, p.y - u * 1.6, u * 1.7, u * 1.6);
-      // Hocico
-      ctx.fillRect(p.x + u * 2.8, p.y - u * 0.9, u * 1.2, u * 0.8);
-      ctx.fillStyle = '#111'; // nariz
-      ctx.fillRect(p.x + u * 3.7, p.y - u * 0.9, u * 0.4, u * 0.4);
-      
-      // Orejas caídas flapeando
-      ctx.fillStyle = '#b9763a';
-      const earFlap = Math.sin(now * 0.03) * u * 0.3;
-      ctx.fillRect(p.x + u * 1.4, p.y - u * 2.4 + earFlap, u * 0.8, u * 1.1);
-
-      // Cola moviéndose super rápido
-      ctx.fillStyle = inc.color;
+      // Perro orientado por su velocidad real: el hocico siempre mira hacia
+      // donde corre, incluso cuando cruza de derecha a izquierda o en diagonal.
+      const speed = Math.hypot(inc.vx ?? 0, inc.vy ?? 0) || 1;
+      const angle = Math.atan2(inc.vy ?? 0, inc.vx ?? 0);
+      const gait = Math.sin(now * 0.035);
+      ctx.fillStyle = 'rgba(0,0,0,0.32)';
+      ctx.beginPath(); ctx.ellipse(p.x, p.y + u * 1.35, u * 2.5, u * 0.5, 0, 0, Math.PI * 2); ctx.fill();
       ctx.save();
-      ctx.translate(p.x - u * 2.2, p.y - u * 0.4);
-      ctx.rotate(run * 0.7);
-      ctx.fillRect(-u * 1.6, -u * 0.3, u * 1.6, u * 0.5);
-      ctx.restore();
-
-      // Patas al galope
+      ctx.translate(p.x, p.y);
+      ctx.rotate(angle);
+      // Estela corta detrás del perro.
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = Math.max(1, u * 0.14);
+      for (let k = 1; k <= 2; k += 1) {
+        ctx.beginPath(); ctx.moveTo(-u * (2.4 + k), -u * (0.5 + k * 0.3)); ctx.lineTo(-u * (3.1 + k), -u * (0.5 + k * 0.3)); ctx.stroke();
+      }
+      // Cuerpo y pecho apuntando al frente local (+X).
+      ctx.fillStyle = inc.color;
+      ctx.fillRect(-u * 2.15, -u * 0.65, u * 3.9, u * 1.65);
+      ctx.fillStyle = '#d58a45'; ctx.fillRect(u * 0.7, -u * 0.55, u * 1.25, u * 1.45);
+      // Cabeza, hocico y nariz al frente.
+      ctx.fillStyle = inc.color; ctx.fillRect(u * 1.25, -u * 1.55, u * 1.65, u * 1.45);
+      ctx.fillRect(u * 2.65, -u * 0.92, u * 1.15, u * 0.72);
+      ctx.fillStyle = '#111'; ctx.fillRect(u * 3.55, -u * 0.9, u * 0.42, u * 0.38);
+      // Orejas rebotando con el galope.
+      ctx.fillStyle = '#a86434';
+      ctx.fillRect(u * 1.35, -u * 2.35 + gait * u * 0.25, u * 0.62, u * 0.95);
+      ctx.fillRect(u * 2.05, -u * 2.30 - gait * u * 0.18, u * 0.62, u * 0.9);
+      // Ojo que mira hacia delante.
+      ctx.fillStyle = '#000'; ctx.fillRect(u * 2.2, -u * 1.2, u * 0.38, u * 0.38);
+      // Cola detrás, oscilando.
+      ctx.save(); ctx.translate(-u * 2.05, -u * 0.35); ctx.rotate(gait * 0.7);
+      ctx.fillStyle = inc.color; ctx.fillRect(-u * 1.55, -u * 0.25, u * 1.6, u * 0.48); ctx.restore();
+      // Cuatro patas, dos fases alternas, sin mezclar posiciones.
       ctx.fillStyle = '#8a5a2b';
-      const lp1 = run * u * 1.1;
-      const lp2 = -run * u * 1.1;
-      ctx.fillRect(p.x - u * 1.8, p.y + u * 0.9, u * 0.6, u * 1.1 + lp1);
-      ctx.fillRect(p.x - u * 0.6, p.y + u * 0.9, u * 0.6, u * 1.1 + lp2);
-      ctx.fillRect(p.x + u * 0.8, p.y + u * 0.9, u * 0.6, u * 1.1 + lp1);
-      ctx.fillRect(p.x + u * 1.8, p.y + u * 0.9, u * 0.6, u * 1.1 + lp2);
-
-      // Lengua fuera
-      ctx.fillStyle = '#ff5a7a';
-      ctx.fillRect(p.x + u * 3.2, p.y - u * 0.3, u * 0.6, u * 0.8);
-
-      // Ojo tierno
-      ctx.fillStyle = '#000';
-      ctx.fillRect(p.x + u * 2.2, p.y - u * 1.2, u * 0.4, u * 0.4);
-
-      // Bocadillo de ladrido gracioso
-      if (Math.sin(now * 0.009) > 0.2 && u > 3.5) {
-        ctx.fillStyle = '#ffffff';
-        ctx.strokeStyle = '#000000';
-        ctx.lineWidth = 1;
-        const bx = p.x + u * 3;
-        const by = p.y - u * 4;
-        ctx.fillRect(bx - u * 3.5, by - 6, u * 7, 13);
-        ctx.strokeRect(bx - u * 3.5, by - 6, u * 7, 13);
-        ctx.fillStyle = '#111111';
-        ctx.font = 'bold 10px "Roboto Mono", monospace';
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText('¡GUAU! 🐶', bx, by + 1);
+      const legA = gait * u * 0.7, legB = -gait * u * 0.7;
+      ctx.fillRect(-u * 1.55, u * 0.75 + legA, u * 0.52, u * 1.15);
+      ctx.fillRect(-u * 0.45, u * 0.75 + legB, u * 0.52, u * 1.15);
+      ctx.fillRect(u * 0.65, u * 0.75 + legB, u * 0.52, u * 1.15);
+      ctx.fillRect(u * 1.55, u * 0.75 + legA, u * 0.52, u * 1.15);
+      ctx.fillStyle = '#f0c199'; ctx.fillRect(u * 3.15, -u * 0.22, u * 0.55, u * 0.7);
+      ctx.restore();
+      if (u > 3.5 && Math.sin(now * 0.009) > 0.2) {
+        ctx.fillStyle = '#fff'; ctx.strokeStyle = '#111'; ctx.lineWidth = 1;
+        ctx.font = 'bold 10px "Roboto Mono", monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillRect(p.x + u * 2.8, p.y - u * 4.1, u * 6.5, 13); ctx.strokeRect(p.x + u * 2.8, p.y - u * 4.1, u * 6.5, 13);
+        ctx.fillStyle = '#111'; ctx.fillText('¡GUAU!', p.x + u * 2.8, p.y - u * 4.1 + 1);
       }
       return;
     }
@@ -1271,12 +1378,32 @@ function App() {
   const renderFrame = useCallback((ctx: CanvasRenderingContext2D, W: number, H: number, now: number) => {
     const sim = matchRef.current;
     if (!sim) return;
+
+    // Seguimiento visual con límite de velocidad. Si una recepción o un saque
+    // cambia la posición lógica, la pelota recorre el trayecto en vez de saltar.
+    const actualBall = sim.ball;
+    if (!visualBallRef.current) {
+      visualBallRef.current = { x: actualBall.x, y: actualBall.y, vx: actualBall.vx, vy: actualBall.vy };
+      visualBallTimeRef.current = now;
+    } else {
+      const visual = visualBallRef.current;
+      const elapsed = Math.max(1, now - visualBallTimeRef.current) / 16.67;
+      const blend = Math.min(1, 0.52 * elapsed);
+      visual.x += (actualBall.x - visual.x) * blend;
+      visual.y += (actualBall.y - visual.y) * blend;
+      visual.vx = actualBall.vx; visual.vy = actualBall.vy;
+      visualBallTimeRef.current = now;
+    }
+    const visualBall = visualBallRef.current;
     const layout = computeLayout(W, H);
     layoutRef.current = layout;
     const cam = cameraRef.current;
     const targets = getTargets(now);
-    const top = targets[0];
-    const topInside = top ? inFrame(top, cam, 0) : false;
+    const priority = targets.find(target => target.kind === 'ball' || !target.caught) ?? targets[0];
+    const onAir = targets.find(target => inFrame(target, cam, 1));
+    const priorityInside = priority ? inFrame(priority, cam, 0) : false;
+    const hasCoverage = Boolean(onAir);
+    const frameColor = priorityInside ? '#ffd166' : hasCoverage ? '#3ddc97' : '#ff4d6d';
     const q = framingRef.current;
 
     ctx.imageSmoothingEnabled = false;
@@ -1288,7 +1415,7 @@ function App() {
 
     // ── MEDIO: mapa grande para verlo todo ──
     const t = layout.tactical;
-    drawPanelChrome(ctx, t, 'MAPA · TOCA UNA ZONA PARA LLEVAR LA CÁMARA', '#22d3ee');
+    drawPanelChrome(ctx, t, 'MAPA DEL REALIZADOR · MUEVE EL RECUADRO DE CÁMARA', '#ff4058');
     ctx.save();
     ctx.beginPath(); ctx.rect(t.inner.x, t.inner.y, t.inner.w, t.inner.h); ctx.clip();
     const tm = fitField(t.inner);
@@ -1324,10 +1451,12 @@ function App() {
     }
 
     // ── JUGADORES ──
-    for (const pl of sim.players) drawPlayerTiny(ctx, tm, pl);
+    for (const pl of sim.players) {
+      drawPlayerTiny(ctx, tm, { ...pl, facingX: pl.targetX - pl.x, facingY: pl.targetY - pl.y });
+    }
 
     // ── BALÓN: más grande, con flecha direccional y trayectoria visible ──
-    drawBall(ctx, tm, sim.ball, true);
+    drawBall(ctx, tm, visualBall, true);
     
     // Flecha direccional en el balón mostrando hacia dónde va
     if (sim.ball.ownerId == null && (Math.abs(sim.ball.vx) > 5 || Math.abs(sim.ball.vy) > 5)) {
@@ -1392,9 +1521,11 @@ function App() {
     // ── RECUADRO DEL ENCUADRE ──
     const a = mMap(tm, cam.x - FRAME_W / 2, cam.y - FRAME_H / 2);
     const b = mMap(tm, cam.x + FRAME_W / 2, cam.y + FRAME_H / 2);
-    ctx.fillStyle = topInside ? 'rgba(61,220,151,0.12)' : 'rgba(255,77,109,0.10)';
+    ctx.fillStyle = priorityInside
+      ? 'rgba(255,209,102,0.13)'
+      : hasCoverage ? 'rgba(61,220,151,0.11)' : 'rgba(255,77,109,0.10)';
     ctx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
-    ctx.strokeStyle = topInside ? '#3ddc97' : '#ff4d6d';
+    ctx.strokeStyle = frameColor;
     ctx.lineWidth = 2;
     ctx.setLineDash([7, 4]);
     ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
@@ -1434,18 +1565,19 @@ function App() {
       ctx.lineWidth = 1.5;
       ctx.stroke();
       
-      // Etiqueta de texto clara
-      ctx.fillStyle = tgt.color;
-      ctx.font = 'bold 9px "Orbitron", sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      ctx.fillText('ENFOCAR', sp.x, sp.y + 18);
+      // El anillo marca una oportunidad sin resolverle al jugador el movimiento.
     }
     ctx.restore();
 
-    // ── ARRIBA: zoom cercano / señal al aire ──
+    // ── ARRIBA: monitor de programa, primer plano y animaciones completas ──
     const bp = layout.broadcast;
-    drawPanelChrome(ctx, bp, slowMoActive ? '◀◀ REPETICIÓN · ZOOM' : '● ZOOM CERCANO · SEÑAL AL AIRE', topInside ? '#3ddc97' : '#ff4d6d', topInside);
+    drawPanelChrome(
+      ctx,
+      bp,
+      slowMoActive ? '◀◀ REPETICIÓN · SEÑAL AL AIRE' : '● MONITOR DE PROGRAMA · LO QUE VE LA AUDIENCIA',
+      slowMoActive ? '#ffd166' : frameColor,
+      hasCoverage,
+    );
     ctx.save();
     ctx.beginPath(); ctx.rect(bp.inner.x, bp.inner.y, bp.inner.w, bp.inner.h); ctx.clip();
     const bm = fitWindow(bp.inner, cam);
@@ -1517,51 +1649,84 @@ function App() {
     }
     const drawables: Array<{ y: number; fn: () => void }> = [];
     for (const pl of sim.players) {
-      const moving = Math.hypot(pl.x - pl.targetX, pl.y - pl.targetY) > 0.4 || pl.hasBall;
+      const previous = playerMotionRef.current.get(pl.id);
+      const elapsed = previous ? Math.max(16, now - previous.time) : 16;
+      const actualSpeed = previous ? Math.hypot(pl.x - previous.x, pl.y - previous.y) * 1000 / elapsed : 0;
+      playerMotionRef.current.set(pl.id, { x: pl.x, y: pl.y, time: now });
+      // Render visual suavizado: si una reanudación recoloca al jugador, la
+      // cámara muestra el desplazamiento en vez de un teletransporte.
+      let visual = visualPlayersRef.current.get(pl.id);
+      if (!visual) { visual = { x: pl.x, y: pl.y }; visualPlayersRef.current.set(pl.id, visual); }
+      const visualBlend = Math.min(1, Math.max(0.18, elapsed / 120));
+      visual.x += (pl.x - visual.x) * visualBlend;
+      visual.y += (pl.y - visual.y) * visualBlend;
+      // Usamos el desplazamiento real y no solo el objetivo: así la zancada
+      // nunca se queda congelada mientras el jugador todavía está avanzando.
+      const moving = actualSpeed > 0.18 || Math.hypot(pl.x - pl.targetX, pl.y - pl.targetY) > 0.08 || pl.hasBall;
       // Detección de festejo de gol por equipo
       const isCelebrate = sim.phase === 'goal';
       const celebrating = isCelebrate && pl.team !== sim.pendingKickoffTeam;
       const sad = isCelebrate && pl.team === sim.pendingKickoffTeam;
       
       drawables.push({
-        y: pl.y,
+        y: visual!.y,
         fn: () => drawPlayerBig(ctx, bm, {
-          x: pl.x, y: pl.y, team: pl.team, number: pl.number,
-          hasBall: pl.hasBall, moving, phase: now * 0.025 + pl.id,
-          role: pl.role, celebrating, sad
+          x: visual!.x, y: visual!.y, team: pl.team, number: pl.number,
+          hasBall: pl.hasBall, moving, phase: now * (moving ? 0.034 : 0.008) + pl.id,
+          role: pl.role, celebrating, sad,
+          facingX: pl.targetX - pl.x, facingY: pl.targetY - pl.y
         })
       });
+    }
+    for (const moment of momentsRef.current) {
+      if (moment.kind === 'foul') drawables.push({ y: moment.y, fn: () => drawFoulBig(ctx, bm, moment, now) });
     }
     for (const inc of incidentsRef.current) drawables.push({ y: inc.y, fn: () => drawIncidentBig(ctx, bm, inc, now) });
     drawables.sort((p, q2) => p.y - q2.y);
     for (const d of drawables) d.fn();
-    drawBall(ctx, bm, sim.ball, true);
-    // retículo sobre objetivo centrado
-    if (top && topInside) {
-      const sp = mMap(bm, top.x, top.y);
+    drawBall(ctx, bm, visualBall, true);
+    // Retículo del contenido que está realmente en antena.
+    if (onAir) {
+      const sp = mMap(bm, onAir.x, onAir.y);
       const rr = 16 + Math.sin(now * 0.012) * 3;
       const col = q > 0.72 ? '#ffd166' : q > 0.4 ? '#3ddc97' : '#8fa6bd';
       ctx.strokeStyle = col; ctx.lineWidth = 2 + q * 2;
       ctx.strokeRect(sp.x - rr, sp.y - rr * 1.3, rr * 2, rr * 2.4);
       ctx.fillStyle = col; ctx.font = 'bold 11px "Roboto Mono", monospace'; ctx.textAlign = 'center';
-      ctx.fillText(top.label.toUpperCase(), sp.x, sp.y - rr * 1.3 - 5);
-      // barra de encuadre
+      ctx.fillText(onAir.label.toUpperCase(), sp.x, sp.y - rr * 1.3 - 5);
+
+      // Barra de calidad del encuadre.
       ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bp.inner.x + 6, bp.inner.y + bp.inner.h - 16, 92, 10);
       ctx.fillStyle = col; ctx.fillRect(bp.inner.x + 8, bp.inner.y + bp.inner.h - 14, 88 * q, 6);
-      // aviso TOMA
-      if (replayReadyRef.current && slowMoCharges > 0 && !slowMoActive && Math.sin(now * 0.014) > -0.2) {
+
+      const lock = captureLockRef.current;
+      const locking = needsCaptureLock(onAir) && !onAir.caught && lock.targetId === onAir.id;
+      if (locking) {
+        const radius = rr * 1.58;
+        ctx.strokeStyle = 'rgba(0,0,0,0.62)';
+        ctx.lineWidth = 6;
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, radius, -Math.PI / 2, Math.PI * 1.5); ctx.stroke();
+        ctx.strokeStyle = lock.progress > 0.72 ? '#ffd166' : '#22d3ee';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * lock.progress);
+        ctx.stroke();
+        ctx.fillStyle = lock.progress > 0.72 ? '#ffd166' : '#22d3ee';
+        ctx.font = 'bold 10px "Orbitron", sans-serif';
+        ctx.fillText(`MANTÉN EL PLANO ${Math.round(lock.progress * 100)}%`, sp.x, sp.y + rr * 1.4 + 16);
+      } else if (replayReadyRef.current && slowMoCharges > 0 && !slowMoActive && Math.sin(now * 0.014) > -0.2) {
         ctx.fillStyle = '#ffd166'; ctx.font = 'bold 12px "Orbitron", sans-serif';
         ctx.fillText('¡TOMA!  [ESPACIO]', sp.x, sp.y + rr * 1.4 + 16);
       }
     }
-    // borde del recorte real: lo que de verdad sale al aire
+    // Borde del recorte real: es una referencia, no una zona de control.
     const ca = mMap(bm, cam.x - FRAME_W / 2, cam.y - FRAME_H / 2);
     const cb = mMap(bm, cam.x + FRAME_W / 2, cam.y + FRAME_H / 2);
-    ctx.strokeStyle = topInside ? 'rgba(61,220,151,0.9)' : 'rgba(255,209,102,0.85)';
+    ctx.strokeStyle = frameColor;
     ctx.lineWidth = 2; ctx.setLineDash([9, 6]);
     ctx.strokeRect(ca.x, ca.y, cb.x - ca.x, cb.y - ca.y);
     ctx.setLineDash([]);
-    ctx.fillStyle = topInside ? 'rgba(61,220,151,0.9)' : 'rgba(255,209,102,0.9)';
+    ctx.fillStyle = frameColor;
     ctx.font = 'bold 9px "Roboto Mono", monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
     ctx.fillText('SALIDA AL AIRE', ca.x + 3, Math.max(bp.inner.y + 2, ca.y - 12));
 
@@ -1590,115 +1755,42 @@ function App() {
     popupsRef.current = alive;
     ctx.restore();
 
-    // ── ABAJO: minimapa + joystick ──
+    // ── ABAJO: control de cámara sin duplicar el mapa táctico ──
     const mm = layout.minimap;
-    drawPanelChrome(ctx, mm, 'MINIMAPA · JOYSTICK ARRIBA', '#ffd166');
+    drawPanelChrome(ctx, mm, 'CONTROL DE CÁMARA · ARRASTRA LA PALANCA', '#ffd166');
     ctx.save();
     ctx.beginPath();
     ctx.rect(mm.inner.x, mm.inner.y, mm.inner.w, mm.inner.h);
     ctx.clip();
-    const mmm = fitField(mm.inner);
-    
-    // Fondo del minimapa (césped + gradas)
-    drawField(ctx, mmm, now);
-    
-    // Eventos con iconos claros
-    for (const inc of incidentsRef.current) {
-      const s = mMap(mmm, inc.x, inc.y);
-      const pulse = 1 + Math.sin(now * 0.008 + inc.x * 0.1) * 0.2;
-      
-      // Halo
-      ctx.fillStyle = inc.color + '40';
-      ctx.beginPath();
-      ctx.arc(s.x, s.y, 8 * pulse, 0, Math.PI * 2);
-      ctx.fill();
-      
-      // Icono
-      ctx.fillStyle = inc.color;
-      ctx.beginPath();
-      ctx.arc(s.x, s.y, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#000';
-      ctx.lineWidth = 1;
-      ctx.stroke();
+
+    // Consola limpia: el mapa completo ya está en el panel central.
+    ctx.fillStyle = '#210a12';
+    ctx.fillRect(mm.inner.x, mm.inner.y, mm.inner.w, mm.inner.h);
+    ctx.strokeStyle = 'rgba(255,209,102,0.12)';
+    ctx.lineWidth = 1;
+    for (let gx = mm.inner.x; gx < mm.inner.x + mm.inner.w; gx += 24) {
+      ctx.beginPath(); ctx.moveTo(gx, mm.inner.y); ctx.lineTo(gx, mm.inner.y + mm.inner.h); ctx.stroke();
     }
-    
-    // Jugadores
-    for (const pl of sim.players) {
-      const s = mMap(mmm, pl.x, pl.y);
-      ctx.fillStyle = teamColor(pl.team, pl.role === 'GK');
-      ctx.beginPath();
-      ctx.arc(s.x, s.y, 1.8, 0, Math.PI * 2);
-      ctx.fill();
+    for (let gy = mm.inner.y; gy < mm.inner.y + mm.inner.h; gy += 24) {
+      ctx.beginPath(); ctx.moveTo(mm.inner.x, gy); ctx.lineTo(mm.inner.x + mm.inner.w, gy); ctx.stroke();
     }
-    
-    // Trayectoria del pase si va a un receptor
-    if (sim.ball.targetOwnerId != null && sim.ball.ownerId == null) {
-      const receiver = sim.players.find(p => p.id === sim.ball.targetOwnerId);
-      if (receiver) {
-        const ballP = mMap(mmm, sim.ball.x, sim.ball.y);
-        const recvP = mMap(mmm, receiver.x, receiver.y);
-        
-        // Línea punteada
-        ctx.strokeStyle = 'rgba(255,209,102,0.7)';
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([3, 2]);
-        ctx.beginPath();
-        ctx.moveTo(ballP.x, ballP.y);
-        ctx.lineTo(recvP.x, recvP.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        
-        // Marcador en receptor
-        ctx.fillStyle = 'rgba(255,209,102,0.5)';
-        ctx.beginPath();
-        ctx.arc(recvP.x, recvP.y, 4, 0, Math.PI * 2);
-        ctx.fill();
-      }
+
+    if (mm.inner.w > 620) {
+      ctx.fillStyle = 'rgba(147,163,184,0.78)';
+      ctx.font = 'bold 9px "Roboto Mono", monospace';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      ctx.fillText('PRECISIÓN', mm.inner.x + 18, mm.inner.y + mm.inner.h / 2 - 10);
+      ctx.fillStyle = '#ffd166';
+      ctx.fillText('WASD / FLECHAS', mm.inner.x + 18, mm.inner.y + mm.inner.h / 2 + 8);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = 'rgba(147,163,184,0.78)';
+      ctx.fillText('DECISIÓN RÁPIDA', mm.inner.x + mm.inner.w - 18, mm.inner.y + mm.inner.h / 2 - 10);
+      ctx.fillStyle = '#ff7180';
+      ctx.fillText('TOCA EL MAPA', mm.inner.x + mm.inner.w - 18, mm.inner.y + mm.inner.h / 2 + 8);
     }
-    
-    // Balón más grande y con flecha direccional
-    const bs = mMap(mmm, sim.ball.x, sim.ball.y);
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.arc(bs.x, bs.y, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
-    
-    // Flecha direccional en el balón
-    if (sim.ball.ownerId == null && (Math.abs(sim.ball.vx) > 5 || Math.abs(sim.ball.vy) > 5)) {
-      const angle = Math.atan2(sim.ball.vy, sim.ball.vx);
-      const arrowLen = 8;
-      
-      ctx.save();
-      ctx.translate(bs.x, bs.y);
-      ctx.rotate(angle);
-      
-      ctx.strokeStyle = '#ffd166';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.lineTo(arrowLen, 0);
-      ctx.moveTo(arrowLen, 0);
-      ctx.lineTo(arrowLen - 3, -2);
-      ctx.moveTo(arrowLen, 0);
-      ctx.lineTo(arrowLen - 3, 2);
-      ctx.stroke();
-      
-      ctx.restore();
-    }
-    
-    // Encuadre
-    const ma = mMap(mmm, cam.x - FRAME_W / 2, cam.y - FRAME_H / 2);
-    const mb = mMap(mmm, cam.x + FRAME_W / 2, cam.y + FRAME_H / 2);
-    ctx.strokeStyle = '#22d3ee';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(ma.x, ma.y, mb.x - ma.x, mb.y - ma.y);
-    
     ctx.restore();
-    
+
     // ── JOYSTICK VISUAL (siempre visible) ──
     {
       const joy = joystickRef.current;
@@ -1710,16 +1802,14 @@ function App() {
       const kx = held ? joy.x : cx;
       const ky = held ? joy.y : cy;
 
-      // Base
-      ctx.fillStyle = held ? 'rgba(4,10,18,0.72)' : 'rgba(4,10,18,0.45)';
+      ctx.fillStyle = held ? 'rgba(4,10,18,0.92)' : 'rgba(4,10,18,0.72)';
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = held ? 'rgba(255,209,102,0.85)' : 'rgba(255,255,255,0.28)';
+      ctx.strokeStyle = held ? '#ffd166' : 'rgba(255,255,255,0.32)';
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      // Cruceta guía
       ctx.strokeStyle = 'rgba(255,255,255,0.16)';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -1727,13 +1817,12 @@ function App() {
       ctx.moveTo(cx, cy - radius * 0.7); ctx.lineTo(cx, cy + radius * 0.7);
       ctx.stroke();
 
-      // Palanca
-      ctx.strokeStyle = held ? 'rgba(255,209,102,0.6)' : 'rgba(255,255,255,0.2)';
+      ctx.strokeStyle = held ? 'rgba(255,209,102,0.65)' : 'rgba(255,255,255,0.2)';
       ctx.lineWidth = 3;
       ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(kx, ky); ctx.stroke();
-      ctx.fillStyle = held ? '#ffd166' : 'rgba(214,226,240,0.75)';
+      ctx.fillStyle = held ? '#ffd166' : '#9aa9bb';
       ctx.beginPath();
-      ctx.arc(kx, ky, radius * 0.36, 0, Math.PI * 2);
+      ctx.arc(kx, ky, radius * 0.34, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = '#04070d';
       ctx.lineWidth = 2;
@@ -1742,7 +1831,7 @@ function App() {
       ctx.fillStyle = held ? '#ffd166' : 'rgba(147,163,184,0.9)';
       ctx.font = 'bold 8px "Roboto Mono", monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('JOYSTICK', cx, cy + radius + 9);
+      ctx.fillText(held ? 'MOVIENDO' : 'JOYSTICK', cx, cy + radius + 9);
     }
 
     ctx.restore();
@@ -1771,20 +1860,24 @@ function App() {
       ctx.restore();
     }
 
-    // Aviso grande cuando hay algo urgente que grabar
-    const urgent = targets.find(tg => tg.importance >= 2.2 && !tg.caught);
+    // Las oportunidades se anuncian en la mesa del realizador, nunca encima
+    // de la señal superior que representa lo que recibe la audiencia.
+    const urgent = targets.find(target => target.importance >= 2.2 && !target.caught);
     if (urgent) {
       const insideU = inFrame(urgent, cam, 0);
       const pulse = 0.55 + Math.sin(now * 0.018) * 0.45;
       ctx.save();
-      ctx.fillStyle = insideU ? `rgba(61,220,151,${0.18 + pulse * 0.12})` : `rgba(255,77,109,${0.22 + pulse * 0.2})`;
-      ctx.fillRect(8, 48, W - 16, 28);
+      const alertY = t.inner.y + 2;
+      ctx.fillStyle = insideU
+        ? `rgba(61,220,151,${0.18 + pulse * 0.12})`
+        : `rgba(255,209,102,${0.15 + pulse * 0.12})`;
+      ctx.fillRect(t.inner.x, alertY, t.inner.w, 26);
       ctx.fillStyle = insideU ? '#3ddc97' : '#ffd166';
-      ctx.font = '900 15px "Orbitron", sans-serif';
+      ctx.font = '900 13px "Orbitron", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      const prefix = insideU ? 'GRABANDO' : '¡ENFOCA!';
-      ctx.fillText(`${prefix}  ·  ${urgent.label.toUpperCase()}`, W / 2, 62);
+      const prefix = insideU ? 'MANTÉN EL PLANO' : 'OPORTUNIDAD';
+      ctx.fillText(`${prefix}  ·  ${urgent.label.toUpperCase()}`, t.inner.x + t.inner.w / 2, alertY + 13);
       ctx.restore();
     }
 
@@ -1843,6 +1936,7 @@ function App() {
       const events = updateMatchSim(sim, incidentsRef.current, momentsRef.current, dt, now, tuning);
       for (const e of events) {
         if (e.type === 'goal') {
+          playGameSound('goal');
           setScoreLine(`${sim.homeGoals} - ${sim.awayGoals}`);
           setShake(1);
           window.setTimeout(() => setShake(0), 180);
@@ -1865,6 +1959,7 @@ function App() {
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.code === 'KeyR' && (phase === 'gameover' || phase === 'paused')) { startGame(currentLevel); return; }
+      if (e.code === 'Escape' && phase === 'paused' && !e.repeat) { togglePause(); return; }
       if (phase !== 'playing') return;
       if (e.repeat && (e.code === 'Space' || e.code === 'Escape')) return;
       keysRef.current.add(e.code);
@@ -1877,17 +1972,17 @@ function App() {
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
   }, [currentLevel, phase, startGame, togglePause, triggerReplay]);
 
-  // ── Puntero: arrastrar encuadre o saltar por el mapa ──
+  // ── Puntero: el mapa mueve el encuadre y el joystick lo afina ──
   useEffect(() => {
     if (phase !== 'playing') return;
     const container = containerRef.current;
     if (!container) return;
     const toLocal = (cx: number, cy: number) => { const b = container.getBoundingClientRect(); return { x: cx - b.left, y: cy - b.top }; };
-    const regionAt = (lx: number, ly: number): 'minimap' | 'tactical' | null => {
+    const regionAt = (lx: number, ly: number): PointerMode | null => {
       const L = layoutRef.current; if (!L) return null;
       const inR = (r: Panel) => lx >= r.inner.x && lx <= r.inner.x + r.inner.w && ly >= r.inner.y && ly <= r.inner.y + r.inner.h;
-      if (inR(L.minimap)) return 'minimap';
       if (inR(L.tactical)) return 'tactical';
+      if (inR(L.minimap)) return 'minimap';
       return null;
     };
     const tacticalToWorld = (lx: number, ly: number) => {
@@ -2015,10 +2110,11 @@ function App() {
               level={LEVELS[currentLevel]} slowMoCharges={slowMoCharges} onPause={togglePause} onSlowMo={triggerReplay}
               slowMoActive={slowMoActive} trackingFeedback={trackingFeedback} scoreLine={scoreLine}
               directorCue={directorCue} framing={framing} replayReady={replayReady}
+              soundEnabled={soundEnabled} onToggleSound={toggleSound}
             />
           </>
         )}
-        {phase === 'paused' && <PauseModal onResume={() => setPhase('playing')} onRestart={() => startGame(currentLevel)} onQuit={() => setPhase('menu')} />}
+        {phase === 'paused' && <PauseModal onResume={togglePause} onRestart={() => startGame(currentLevel)} onQuit={() => setPhase('menu')} />}
         {phase === 'gameover' && (
           <GameOverScreen score={score} level={LEVELS[currentLevel]} highScores={highScores}
             isNewHighScore={highScores.length === 0 || score >= (highScores[0]?.score || 0)}
