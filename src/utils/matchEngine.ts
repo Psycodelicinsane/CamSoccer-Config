@@ -319,10 +319,13 @@ export function spawnIncident(now: number, allowed: IncidentKind[] = DEFAULT_INC
 function setBallOwner(sim: MatchSim, owner: EnginePlayer) {
   sim.players.forEach(p => { p.hasBall = p.id === owner.id; });
   const b = sim.ball;
-  // Si el balón estaba suelto y el jugador está realmente cerca, NO movemos
-  // la pelota hasta el jugador: el jugador llega a la pelota. Esto evita el
-  // efecto de aparecer/desaparecer en recepciones, robos y paradas.
-  const preserveBall = b.ownerId == null && b.looseSince != null && dist(owner.x, owner.y, b.x, b.y) < 6;
+  // Si el balón estaba suelto, NO movemos la pelota hasta el jugador:
+  // el jugador llega a la pelota. Así no aparece/desaparece en recepciones,
+  // robos y paradas.
+  // La pelota es la autoridad visual: cuando alguien la recupera, el jugador
+  // llega hasta ella. Nunca recolocamos la pelota junto al jugador, porque eso
+  // produce el salto/teletransporte que se ve como una desaparición.
+  const preserveBall = b.ownerId == null && b.looseSince != null;
   if (preserveBall) {
     owner.x = clamp(b.x, 1, 99);
     owner.y = clamp(b.y, 2, 98);
@@ -869,7 +872,7 @@ export function updateMatchSim(
           // ¡FALTA! el portador mantiene el balón y se reanuda rápido
           sim.nextDecisionAt = now + 1000;
           sim.passStreak = 0;
-          addMoment(sim, moments, 'foul', carrier.x, carrier.y, '¡Falta!', 2.5, '#ffd166', now, 2400);
+          addMoment(sim, moments, 'foul', carrier.x, carrier.y, (carrier.team === 'home' ? carrier.x > 76 : carrier.x < 24) ? '¡Penalti!' : '¡Falta! · Saque', 2.8, '#ff4058', now, 2400);
           events.push({ type: 'foul', x: carrier.x, y: carrier.y, label: 'Falta' });
         } else {
           setBallOwner(sim, nearestOpponent);

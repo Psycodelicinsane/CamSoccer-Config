@@ -15,11 +15,14 @@ interface Props {
   directorCue: string;
   framing: number;
   replayReady: boolean;
+  soundEnabled: boolean;
+  onToggleSound: () => void;
 }
 
 export function GameHUD({
   audience, score, combo, timeRemaining, level, slowMoCharges, onPause, onSlowMo,
   slowMoActive, trackingFeedback, scoreLine, directorCue, framing, replayReady,
+  soundEnabled, onToggleSound,
 }: Props) {
   const aColor = audience < 30 ? '#ff4d6d' : audience < 55 ? '#ffd166' : '#3ddc97';
   const fColor = framing > 0.72 ? '#ffd166' : framing > 0.4 ? '#3ddc97' : '#8fa6bd';
@@ -29,6 +32,12 @@ export function GameHUD({
 
   return (
     <div className="hudstrip">
+      {audience < 25 && (
+        <div className={`transmission-alert ${audience < 12 ? 'is-critical' : ''}`} role="status">
+          <span className="transmission-alert__lamp" />
+          {audience < 12 ? '⚠ CORTANDO LA SEÑAL · RECUPERA LA AUDIENCIA' : '⚠ AVISO · LA SEÑAL SE ESTÁ CORTANDO'}
+        </div>
+      )}
       <div className="hudstrip__group hudstrip__group--live">
         <span className="live-badge"><i />LIVE</span>
         <span className="level-chip" style={{ ['--chip' as string]: level.color }}>{level.icon} <b>{level.name}</b></span>
@@ -67,6 +76,14 @@ export function GameHUD({
         <span className="toma-btn__pips">{[0, 1, 2, 3].map(i => <i key={i} className={i < slowMoCharges ? 'on' : ''} />)}</span>
       </button>
 
+      <button
+        className={`sound-btn ${soundEnabled ? '' : 'is-muted'}`}
+        onClick={onToggleSound}
+        aria-label={soundEnabled ? 'Silenciar sonido' : 'Activar sonido'}
+        title={soundEnabled ? 'Silenciar sonido' : 'Activar sonido'}
+      >
+        {soundEnabled ? '♪' : '×'}
+      </button>
       <button className="pause-btn" onClick={onPause} aria-label="Pausa">❚❚</button>
     </div>
   );

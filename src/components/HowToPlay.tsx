@@ -57,9 +57,9 @@ export function HowToPlay({ onClose }: Props) {
           <section className="instruction-section">
             <h3>🎥 Tres zonas de trabajo</h3>
             <ul className="event-list">
-              <li><span className="event-icon">📺</span><span><strong>ARRIBA · ZOOM</strong>: el plano cercano que sale al aire. Aquí ves caras, el balón y las gradas</span></li>
-              <li><span className="event-icon">🗺️</span><span><strong>MEDIO · MAPA</strong>: toca cualquier zona y la cámara viaja allí al instante</span></li>
-              <li><span className="event-icon">🕹️</span><span><strong>ABAJO · JOYSTICK</strong>: arrastra para mover la cámara con precisión (funciona a la vez que el mapa)</span></li>
+              <li><span className="event-icon">📺</span><span><strong>ARRIBA · SEÑAL</strong>: es lo que está grabando tu cámara y lo que ve la audiencia. Aquí disfrutas las animaciones de cerca; no se controla</span></li>
+              <li><span className="event-icon">🗺️</span><span><strong>MEDIO · MAPA</strong>: toca o arrastra sobre el campo para mover el recuadro de cámara</span></li>
+              <li><span className="event-icon">🕹️</span><span><strong>ABAJO · PRECISIÓN</strong>: usa la palanca para centrar y seguir la acción sin saltos</span></li>
             </ul>
           </section>
 
@@ -84,17 +84,17 @@ export function HowToPlay({ onClose }: Props) {
               </div>
             </div>
             <p className="touch-hint">
-              <strong>📱 Táctil:</strong> Arrastra sobre el campo para mover el encuadre · toca el mapa para saltar
+              <strong>📱 Táctil:</strong> Toca o arrastra el mapa · usa la palanca inferior para afinar
             </p>
           </section>
 
           <section className="instruction-section">
             <h3>⭐ ¡TOMA! — tu jugada maestra</h3>
             <p>
-              Cuando tengas un buen momento <strong>bien centrado</strong>, pulsa <span className="key">ESPACIO</span>{' '}
-              (o el botón <strong>¡TOMA!</strong>) para cortar a repetición a cámara lenta y llevarte un{' '}
-              <strong>bonus enorme</strong>. Si cortas sin nada bueno en pantalla, pierdes la carga y audiencia.
-              Las cargas se recargan solas.
+              Mantén un momento interesante <strong>bien centrado</strong> hasta completar el círculo de captura.
+              Cuando se ilumine <strong>¡TOMA!</strong>, pulsa <span className="key">ESPACIO</span> para cortar a
+              repetición y llevarte un <strong>bonus enorme</strong>. Cada jugada admite una sola repetición:
+              si cortas antes de consolidar el plano, pierdes la carga y audiencia.
             </p>
           </section>
 
@@ -122,8 +122,9 @@ export function HowToPlay({ onClose }: Props) {
               <li>• El <strong>mapa</strong> es un teletransporte: toca para saltar a cualquier zona al instante</li>
               <li>• Si aparece una <strong>flecha de color</strong> sobre el campo, ¡ve hacia ella!</li>
               <li>• Un <strong>círculo que se cierra</strong> avisa de que algo va a pasar ahí: llega antes</li>
+              <li>• Seguir el <strong>balón</strong> mantiene segura la retransmisión y la audiencia</li>
+              <li>• Perros, peleas y banquillos son <strong>oportunidades de bonus</strong>: decide si compensa abandonar la jugada</li>
               <li>• Encadena capturas para subir la <strong>racha</strong> y el multiplicador</li>
-              <li>• No grabar lo importante <strong>penaliza fuerte</strong>: pierdes audiencia y puntos</li>
             </ul>
           </section>
         </div>
