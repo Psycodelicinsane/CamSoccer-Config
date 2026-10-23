@@ -5,7 +5,7 @@ export type Team = 'home' | 'away';
 export type Role = 'GK' | 'DEF' | 'MID' | 'FWD';
 export type MatchPhase = 'kickoff' | 'open' | 'pass' | 'shot' | 'goal';
 export type MomentKind = 'pass' | 'longpass' | 'shot' | 'goal' | 'save' | 'tackle' | 'recover' | 'dribble' | 'foul';
-export type IncidentKind = 'dog' | 'streaker' | 'fight' | 'coach';
+export type IncidentKind = 'dog' | 'streaker' | 'fight' | 'coach' | 'mascot' | 'drone' | 'sprinkler' | 'flare';
 
 export interface EnginePlayer {
   id: number;
@@ -65,7 +65,7 @@ export interface EngineIncident {
 }
 
 export interface MatchEvent {
-  type: 'goal' | 'save' | 'shot' | 'pass' | 'longpass' | 'tackle' | 'recover' | 'dribble' | 'foul';
+  type: 'goal' | 'save' | 'shot' | 'pass' | 'longpass' | 'tackle' | 'recover' | 'dribble' | 'foul' | 'incident';
   x: number;
   y: number;
   label: string;
@@ -118,7 +118,7 @@ export interface MatchTuning {
 
 const DEFAULT_TUNING: MatchTuning = {
   pace: 1,
-  incidentKinds: ['dog', 'streaker', 'fight', 'coach'],
+  incidentKinds: ['dog', 'streaker', 'fight', 'coach', 'mascot', 'drone', 'sprinkler', 'flare'],
   incidentGap: 14000,
 };
 
@@ -197,7 +197,7 @@ export function createMatchSim(now: number): MatchSim {
     nextDecisionAt: now + 1400,
     nextIncidentAt: now + 9000 + Math.random() * 9000,
     kickoffUntil: now + 900,
-    lastComment: `Saca el equipo ${possession === 'home' ? 'rojo' : 'azul'}`,
+    lastComment: `Saca el equipo ${possession === 'home' ? 'local' : 'visitante'}`,
     lastPasserId: null,
     shotBias: 0,
     passStreak: 0,
@@ -209,7 +209,7 @@ export function createMatchSim(now: number): MatchSim {
   };
 }
 
-const DEFAULT_INCIDENTS: IncidentKind[] = ['dog', 'streaker', 'fight', 'coach'];
+const DEFAULT_INCIDENTS: IncidentKind[] = ['dog', 'streaker', 'fight', 'coach', 'mascot', 'drone', 'sprinkler', 'flare'];
 
 export function spawnIncident(now: number, allowed: IncidentKind[] = DEFAULT_INCIDENTS): EngineIncident {
   const pool = allowed.length > 0 ? allowed : DEFAULT_INCIDENTS;
@@ -295,25 +295,72 @@ export function spawnIncident(now: number, allowed: IncidentKind[] = DEFAULT_INC
       bornAt: now,
     };
   }
-  // Entrenador cabreado: sale de su banquillo (arriba o abajo) a protestar al área técnica
-  const isTopBench = Math.random() > 0.5;
-  const startX = 40 + Math.random() * 20;
-  const startY = isTopBench ? -5.5 : 105.5;
-  const walkVx = (Math.random() - 0.5) * 4;
-  return {
-    id: uid('inc_'),
-    kind: 'coach',
-    x: startX,
-    y: startY,
-    vx: walkVx,
-    vy: isTopBench ? 2.2 : -2.2, // camina hacia la línea de banda
-    label: '¡Entrenador fuera de sí!',
-    color: '#9c27b0',
-    importance: 2.5,
-    expiresAt: now + 7000,
-    caught: false,
-    bornAt: now,
-  };
+  if (kind === 'mascot') {
+    const fromLeft = Math.random() > 0.5;
+    const fromTop = Math.random() > 0.5;
+    const duration = 11;
+    const startX = fromLeft ? -8 : 108;
+    return {
+      id: uid('inc_'), kind,
+      x: startX, y: fromTop ? -4 : 104,
+      vx: (fromLeft ? 116 : -116) / duration, vy: 0,
+      label: '¡Mascota desatada!', color: '#f6c453', importance: 3.1,
+      expiresAt: now + duration * 1000, caught: false, bornAt: now,
+    };
+  }
+  if (kind === 'drone') {
+    const fromLeft = Math.random() > 0.5;
+    const startX = fromLeft ? -10 : 110;
+    const startY = 16 + Math.random() * 68;
+    const targetY = clamp(startY + (Math.random() - 0.5) * 30, 12, 88);
+    const duration = 10.5;
+    return {
+      id: uid('inc_'), kind,
+      x: startX, y: startY,
+      vx: (fromLeft ? 120 : -120) / duration, vy: (targetY - startY) / duration,
+      label: '¡Dron invade la señal!', color: '#8be9fd', importance: 3.4,
+      expiresAt: now + duration * 1000, caught: false, bornAt: now,
+    };
+  }
+  if (kind === 'sprinkler') {
+    const duration = 9;
+    return {
+      id: uid('inc_'), kind,
+      x: 16 + Math.random() * 68, y: 16 + Math.random() * 68,
+      vx: 0, vy: 0,
+      label: '¡Aspersores en marcha!', color: '#66d9ff', importance: 3.3,
+      expiresAt: now + duration * 1000, caught: false, bornAt: now,
+    };
+  }
+  if (kind === 'flare') {
+    const side = Math.floor(Math.random() * 4);
+    let x = 18 + Math.random() * 64;
+    let y = -13;
+    if (side === 1) y = 113;
+    else if (side === 2) { x = -13; y = 16 + Math.random() * 68; }
+    else if (side === 3) { x = 113; y = 16 + Math.random() * 68; }
+    return {
+      id: uid('inc_'), kind, x, y, vx: 0, vy: 0,
+      label: '¡Bengala en la grada!', color: '#ff6b35', importance: 3.5,
+      expiresAt: now + 10000, caught: false, bornAt: now,
+    };
+  }
+  if (kind === 'coach') {
+    // Entrenador cabreado: sale de su banquillo a protestar al área técnica.
+    const isTopBench = Math.random() > 0.5;
+    const startX = 40 + Math.random() * 20;
+    const startY = isTopBench ? -5.5 : 105.5;
+    return {
+      id: uid('inc_'), kind,
+      x: startX, y: startY,
+      vx: (Math.random() - 0.5) * 4,
+      vy: isTopBench ? 2.2 : -2.2,
+      label: '¡Entrenador fuera de sí!', color: '#9c27b0', importance: 2.5,
+      expiresAt: now + 7000, caught: false, bornAt: now,
+    };
+  }
+  // Fallback explícito: un tipo desconocido nunca debe disfrazarse de coach.
+  return spawnIncident(now, ['dog']);
 }
 
 function setBallOwner(sim: MatchSim, owner: EnginePlayer) {
@@ -346,6 +393,13 @@ function setBallOwner(sim: MatchSim, owner: EnginePlayer) {
   sim.phase = 'open';
 }
 
+function placeRestart(sim: MatchSim, owner: EnginePlayer, x: number, y: number) {
+  setBallOwner(sim, owner);
+  // En una reanudación sí hay que colocar balón y sacador en el punto reglamentario.
+  owner.x = x; owner.y = y; owner.targetX = x; owner.targetY = y;
+  sim.ball.x = x; sim.ball.y = y; sim.ball.leadX = x; sim.ball.leadY = y;
+}
+
 function nearestPlayer(sim: MatchSim, x: number, y: number, excludeId?: number): EnginePlayer | null {
   let best: EnginePlayer | null = null;
   let bestDist = Infinity;
@@ -358,6 +412,17 @@ function nearestPlayer(sim: MatchSim, x: number, y: number, excludeId?: number):
     }
   }
   return best;
+}
+
+function closestOutfieldPlayer(sim: MatchSim, team: Team, x: number, y: number) {
+  let best: EnginePlayer | null = null;
+  let bestDistance = Infinity;
+  for (const player of sim.players) {
+    if (player.team !== team || player.role === 'GK') continue;
+    const distance = dist(player.x, player.y, x, y);
+    if (distance < bestDistance) { best = player; bestDistance = distance; }
+  }
+  return best ?? sim.players.find(player => player.team === team) ?? sim.players[0];
 }
 
 function choosePassTarget(sim: MatchSim, carrier: EnginePlayer): EnginePlayer {
@@ -426,6 +491,8 @@ function resetForKickoff(sim: MatchSim, now: number, possession: Team) {
   sim.possession = possession;
   sim.phase = 'kickoff';
   sim.kickoffUntil = now + 1000;
+  sim.goalPauseUntil = 0;
+  sim.pendingKickoffTeam = null;
   sim.nextDecisionAt = now + 1500;
   sim.lastPasserId = null;
   sim.shotBias = 0;
@@ -447,6 +514,18 @@ export function updateMatchSim(
 ): MatchEvent[] {
   const events: MatchEvent[] = [];
   const pace = tuning.pace;
+
+  // Los incidentes viven también durante un gol: antes este bloque quedaba
+  // después de un return y un perro podía congelarse con las patas corriendo.
+  for (let i = incidents.length - 1; i >= 0; i -= 1) {
+    const inc = incidents[i];
+    inc.x += inc.vx * dt;
+    inc.y += inc.vy * dt;
+    if (now >= inc.expiresAt || inc.x < -22 || inc.x > 122 || inc.y < -22 || inc.y > 122) incidents.splice(i, 1);
+  }
+  for (let i = moments.length - 1; i >= 0; i -= 1) {
+    if (now >= moments[i].expiresAt) moments.splice(i, 1);
+  }
 
   // ---- Fase de GOL ----
   if (sim.phase === 'goal') {
@@ -504,21 +583,12 @@ export function updateMatchSim(
   // ---- Incidentes de grada (progresión por nivel) ----
   if (now > sim.nextIncidentAt) {
     if (tuning.incidentKinds.length > 0) {
-      incidents.push(spawnIncident(now, tuning.incidentKinds));
+      const incident = spawnIncident(now, tuning.incidentKinds);
+      incidents.push(incident);
+      events.push({ type: 'incident', x: incident.x, y: incident.y, label: incident.label });
     }
     // Gap con variación aleatoria; niveles altos = más caos
     sim.nextIncidentAt = now + tuning.incidentGap + Math.random() * tuning.incidentGap * 0.8;
-  }
-  for (let i = incidents.length - 1; i >= 0; i -= 1) {
-    const inc = incidents[i];
-    inc.x += inc.vx * dt;
-    inc.y += inc.vy * dt;
-    // Los límites cubren las 4 gradas (-20..120): si no, los incidentes de
-    // grada lateral se eliminarían nada más aparecer.
-    if (now >= inc.expiresAt || inc.x < -22 || inc.x > 122 || inc.y < -22 || inc.y > 122) incidents.splice(i, 1);
-  }
-  for (let i = moments.length - 1; i >= 0; i -= 1) {
-    if (now >= moments[i].expiresAt) moments.splice(i, 1);
   }
 
   const ball = sim.ball;
@@ -583,17 +653,19 @@ export function updateMatchSim(
     ball.y += ball.vy * dt;
     ball.vx *= drag;
     ball.vy *= drag;
-    if (ball.y < 1 || ball.y > 99) {
+    const touchline: 'top' | 'bottom' | null = ball.y < 1 ? 'top' : ball.y > 99 ? 'bottom' : null;
+    if (touchline) {
       ball.y = clamp(ball.y, 1, 99);
       ball.vy *= -0.7;
     }
 
     const looseTime = now - ball.looseSince;
+    const outOfBounds = Boolean(touchline || ball.x < 1 || ball.x > 99);
 
     // Pase: recepción, intercepción o salida
     if (sim.phase === 'pass' && ball.targetOwnerId != null) {
       const receiver = sim.players.find(p => p.id === ball.targetOwnerId) ?? null;
-      if (receiver && dist(ball.x, ball.y, receiver.x, receiver.y) < 4.6) {
+      if (!outOfBounds && receiver && dist(ball.x, ball.y, receiver.x, receiver.y) < 4.6) {
         const passerId = sim.lastPasserId;
         const passer = passerId != null ? sim.players.find(p => p.id === passerId) : null;
         setBallOwner(sim, receiver);
@@ -628,7 +700,7 @@ export function updateMatchSim(
         } else {
           sim.passStreak = 0;
         }
-      } else if (looseTime > 550) {
+      } else if (!outOfBounds && looseTime > 550) {
         // Intercepción rara y solo si el rival está encima del balón
         const challenger = nearestPlayer(sim, ball.x, ball.y, receiver ? receiver.id : undefined);
         if (
@@ -646,61 +718,49 @@ export function updateMatchSim(
         }
       }
 
-      // Saque de banda o de portería según el lado y la zona
-      if (sim.phase === 'pass' && (ball.x < 2 || ball.x > 98)) {
-        const outLeft = ball.x < 2;
-        const outAtGoalkeeper = (outLeft && ball.y > 32 && ball.y < 68) || (!outLeft && ball.y > 32 && ball.y < 68);
-        const team: Team = sim.possession;
-        // Si salió por la línea de FONDO y no está en área → saque de PORTERÍA para el portero rival
-        if (outAtGoalkeeper) {
-          const defending: Team = team === 'home' ? 'away' : 'home';
-          const gk = sim.players.find(p => p.team === defending && p.role === 'GK') ?? sim.players[0];
-          gk.x = outLeft ? 4 : 96;
-          gk.y = clamp(ball.y, 36, 64);
-          sim.possession = defending;
-          setBallOwner(sim, gk);
-          sim.nextDecisionAt = now + 1000;
-          sim.lastComment = 'Saque de portería';
+      // Reanudaciones: la salida se resuelve antes que una recepción cercana.
+      if (sim.phase === 'pass' && outOfBounds) {
+        const previousTeam = sim.possession;
+        const otherTeam: Team = previousTeam === 'home' ? 'away' : 'home';
+        if (touchline) {
+          const taker = closestOutfieldPlayer(sim, otherTeam, ball.x, ball.y);
+          const restartX = clamp(ball.x, 3, 97);
+          const restartY = touchline === 'top' ? 2 : 98;
+          placeRestart(sim, taker, restartX, restartY);
+          sim.nextDecisionAt = now + 700;
           sim.passStreak = 0;
-            addMoment(sim, moments, 'recover', gk.x, gk.y, 'SAQUE DE PORTERÍA', 1.6, '#9be7ff', now, 1800);
-          events.push({ type: 'recover', x: gk.x, y: gk.y, label: 'Portería' });
+          sim.shotBias = 0;
+          sim.lastComment = 'Saque de banda';
+          addMoment(sim, moments, 'recover', restartX, restartY, 'SAQUE DE BANDA', 1.7, '#9be7ff', now, 1800);
+          events.push({ type: 'recover', x: restartX, y: restartY, label: 'Banda' });
         } else {
-          // SAQUE DE BANDA (lateral) o de ESQUINA según la salida
-          const isCorner =
-            (outLeft && (ball.x < 1 || ball.x > 99)) ||
-            (!outLeft && (ball.x < 1 || ball.x > 99));
-          if (isCorner && (ball.x <= 0 || ball.x >= 100) && (ball.y <= 0 || ball.y >= 100)) {
-            // Esquina: saca el rival con un valor alto
-            const defending: Team = team === 'home' ? 'away' : 'home';
-            const taker = sim.players
-              .filter(p => p.team === defending && p.role !== 'GK')
-              .sort((a, b) => dist(b.x, b.y, ball.x, ball.y) - dist(a.x, a.y, ball.x, ball.y))[0]
-              ?? sim.players.find(p => p.team === defending && p.role !== 'GK') ?? sim.players[0];
-            taker.x = clamp(ball.x, 2, 98);
-            taker.y = ball.y <= 0 ? 2 : 98;
-            sim.possession = defending;
-            setBallOwner(sim, taker);
+          const outLeft = ball.x < 1;
+          const attackingGoalLine = (previousTeam === 'home' && !outLeft) || (previousTeam === 'away' && outLeft);
+          if (attackingGoalLine) {
+            // El atacante envió el balón fuera: portería para el equipo que defiende.
+            const gk = sim.players.find(player => player.team === otherTeam && player.role === 'GK') ?? sim.players[0];
+            const restartX = outLeft ? 4 : 96;
+            const restartY = clamp(ball.y, 36, 64);
+            placeRestart(sim, gk, restartX, restartY);
+            sim.nextDecisionAt = now + 1000;
+            sim.passStreak = 0;
+            sim.shotBias = 0;
+            sim.lastComment = 'Saque de portería';
+            addMoment(sim, moments, 'recover', restartX, restartY, 'SAQUE DE PORTERÍA', 1.6, '#9be7ff', now, 1800);
+            events.push({ type: 'recover', x: restartX, y: restartY, label: 'Portería' });
+          } else {
+            // Un pase hacia la propia línea concede córner al rival. Antes la
+            // condición exigía coordenadas imposibles y esta rama nunca se ejecutaba.
+            const taker = closestOutfieldPlayer(sim, otherTeam, ball.x, ball.y);
+            const restartX = outLeft ? 2 : 98;
+            const restartY = ball.y < 50 ? 2 : 98;
+            placeRestart(sim, taker, restartX, restartY);
             sim.nextDecisionAt = now + 900;
             sim.passStreak = 0;
-            sim.shotBias = 1; // un saque de esquina siempre precede a un gol
+            sim.shotBias = 1;
             sim.lastComment = 'Saque de esquina';
-            addMoment(sim, moments, 'recover', taker.x, taker.y, '¡CÓRNER!', 2.4, '#ffd166', now, 2000);
-            events.push({ type: 'recover', x: taker.x, y: taker.y, label: 'Corner' });
-          } else {
-            const nextTeam: Team = team === 'home' ? 'away' : 'home';
-            const taker = sim.players
-              .filter(p => p.team === nextTeam && p.role !== 'GK')
-              .sort((a, b) => dist(b.x, b.y, ball.x, ball.y) - dist(a.x, a.y, ball.x, ball.y))[0]
-              ?? sim.players.find(p => p.team === nextTeam && p.role !== 'GK') ?? sim.players[0];
-            taker.x = clamp(ball.x, 8, 92);
-            taker.y = clamp(ball.y, 12, 88);
-            sim.possession = nextTeam;
-            setBallOwner(sim, taker);
-            sim.nextDecisionAt = now + 700;
-            sim.passStreak = 0;
-            sim.lastComment = 'Saque de banda';
-            addMoment(sim, moments, 'recover', taker.x, taker.y, 'SAQUE DE BANDA', 1.7, '#9be7ff', now, 1800);
-            events.push({ type: 'recover', x: taker.x, y: taker.y, label: 'Banda' });
+            addMoment(sim, moments, 'recover', restartX, restartY, '¡CÓRNER!', 2.4, '#ffd166', now, 2000);
+            events.push({ type: 'recover', x: restartX, y: restartY, label: 'Corner' });
           }
         }
       }
@@ -718,7 +778,7 @@ export function updateMatchSim(
         const scoreX = scoring === 'home' ? 96 : 4;
         addMoment(sim, moments, 'goal', scoreX, 50, '¡GOL DE PALO!', 5.8, '#ff3366', now, 5000);
         const benchY = scoring === 'home' ? -3 : 103;
-        addMoment(sim, moments, 'recover', 50, benchY, '¡BANQUILLO LOCO!', 2.1, scoring === 'home' ? '#ff4d6d' : '#22d3ee', now, 3800);
+        addMoment(sim, moments, 'recover', 50, benchY, '¡BANQUILLO LOCO!', 2.1, '#ffd166', now, 3800);
         events.push({ type: 'goal', x: scoreX, y: 50, label: 'GOL DE PALO', team: scoring });
         sim.players.forEach(p => { p.hasBall = false; });
         ball.ownerId = null;
@@ -764,7 +824,7 @@ export function updateMatchSim(
           addMoment(sim, moments, 'goal', gx, 50, 'GOOOOOL', 5.6, '#ff3366', now, 4800);
           // Banquillo local celebrando: la cámara puede subir a filmarlo
           const benchY = scoring === 'home' ? -3 : 103;
-          addMoment(sim, moments, 'recover', 50, benchY, '¡BANQUILLO LOCO!', 2.1, scoring === 'home' ? '#ff4d6d' : '#22d3ee', now, 3800);
+          addMoment(sim, moments, 'recover', 50, benchY, '¡BANQUILLO LOCO!', 2.1, '#ffd166', now, 3800);
           events.push({ type: 'goal', x: gx, y: 50, label: 'GOOOOL', team: scoring });
           // La pelota queda dentro de la red antes del saque de centro.
           sim.players.forEach(p => { p.hasBall = false; });
@@ -798,7 +858,7 @@ export function updateMatchSim(
 
     // WATCHDOG: si el balón se pierde, lo recoge un compañero del equipo en posesión
     // (o el más cercano del equipo receptor del pase). Nunca "al azar al contrario".
-    if (ball.ownerId == null && sim.phase !== 'kickoff' && looseTime > 1200) {
+    if (ball.ownerId == null && (sim.phase === 'open' || sim.phase === 'pass') && looseTime > 1200) {
       const preferredTeam =
         (ball.targetOwnerId != null
           ? sim.players.find(p => p.id === ball.targetOwnerId)?.team

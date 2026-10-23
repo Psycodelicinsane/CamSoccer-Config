@@ -1,0 +1,22 @@
+{
+  "name": "CamSoccer · Broadcast Club",
+  "short_name": "CamSoccer",
+  "description": "El juego arcade en el que diriges la retransmisión de fútbol.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#080d12",
+  "theme_color": "#080d12",
+  "lang": "es",
+  "categories": ["games", "sports", "entertainment"],
+  "icons": [
+    { "src": "./pwa-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "./pwa-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Continuar carrera", "url": "./?mode=career", "icons": [{ "src": "./pwa-192.png", "sizes": "192x192" }] },
+    { "name": "Modo arcade", "url": "./?mode=arcade", "icons": [{ "src": "./pwa-192.png", "sizes": "192x192" }] }
+  ]
+}

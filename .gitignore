@@ -1,2 +1,14 @@
 node_modules/
 dist/
+.venv/
+test-results/
+*.log
+.DS_Store
+android/.gradle/
+android/local.properties
+android/app/build/
+android/build/
+# Never commit Play signing material.
+*.jks
+*.keystore
+keystore.properties
