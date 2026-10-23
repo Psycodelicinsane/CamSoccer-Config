@@ -5,7 +5,7 @@ export type Team = 'home' | 'away';
 export type Role = 'GK' | 'DEF' | 'MID' | 'FWD';
 export type MatchPhase = 'kickoff' | 'open' | 'pass' | 'shot' | 'goal';
 export type MomentKind = 'pass' | 'longpass' | 'shot' | 'goal' | 'save' | 'tackle' | 'recover' | 'dribble' | 'foul';
-export type IncidentKind = 'dog' | 'streaker' | 'fight' | 'coach';
+export type IncidentKind = 'dog' | 'streaker' | 'fight' | 'coach' | 'mascot' | 'drone' | 'sprinkler' | 'flare';
 
 export interface EnginePlayer {
   id: number;
@@ -65,7 +65,7 @@ export interface EngineIncident {
 }
 
 export interface MatchEvent {
-  type: 'goal' | 'save' | 'shot' | 'pass' | 'longpass' | 'tackle' | 'recover' | 'dribble' | 'foul';
+  type: 'goal' | 'save' | 'shot' | 'pass' | 'longpass' | 'tackle' | 'recover' | 'dribble' | 'foul' | 'incident';
   x: number;
   y: number;
   label: string;
@@ -118,7 +118,7 @@ export interface MatchTuning {
 
 const DEFAULT_TUNING: MatchTuning = {
   pace: 1,
-  incidentKinds: ['dog', 'streaker', 'fight', 'coach'],
+  incidentKinds: ['dog', 'streaker', 'fight', 'coach', 'mascot', 'drone', 'sprinkler', 'flare'],
   incidentGap: 14000,
 };
 
@@ -209,7 +209,7 @@ export function createMatchSim(now: number): MatchSim {
   };
 }
 
-const DEFAULT_INCIDENTS: IncidentKind[] = ['dog', 'streaker', 'fight', 'coach'];
+const DEFAULT_INCIDENTS: IncidentKind[] = ['dog', 'streaker', 'fight', 'coach', 'mascot', 'drone', 'sprinkler', 'flare'];
 
 export function spawnIncident(now: number, allowed: IncidentKind[] = DEFAULT_INCIDENTS): EngineIncident {
   const pool = allowed.length > 0 ? allowed : DEFAULT_INCIDENTS;
@@ -295,25 +295,72 @@ export function spawnIncident(now: number, allowed: IncidentKind[] = DEFAULT_INC
       bornAt: now,
     };
   }
-  // Entrenador cabreado: sale de su banquillo (arriba o abajo) a protestar al área técnica
-  const isTopBench = Math.random() > 0.5;
-  const startX = 40 + Math.random() * 20;
-  const startY = isTopBench ? -5.5 : 105.5;
-  const walkVx = (Math.random() - 0.5) * 4;
-  return {
-    id: uid('inc_'),
-    kind: 'coach',
-    x: startX,
-    y: startY,
-    vx: walkVx,
-    vy: isTopBench ? 2.2 : -2.2, // camina hacia la línea de banda
-    label: '¡Entrenador fuera de sí!',
-    color: '#9c27b0',
-    importance: 2.5,
-    expiresAt: now + 7000,
-    caught: false,
-    bornAt: now,
-  };
+  if (kind === 'mascot') {
+    const fromLeft = Math.random() > 0.5;
+    const fromTop = Math.random() > 0.5;
+    const duration = 11;
+    const startX = fromLeft ? -8 : 108;
+    return {
+      id: uid('inc_'), kind,
+      x: startX, y: fromTop ? -4 : 104,
+      vx: (fromLeft ? 116 : -116) / duration, vy: 0,
+      label: '¡Mascota desatada!', color: '#f6c453', importance: 3.1,
+      expiresAt: now + duration * 1000, caught: false, bornAt: now,
+    };
+  }
+  if (kind === 'drone') {
+    const fromLeft = Math.random() > 0.5;
+    const startX = fromLeft ? -10 : 110;
+    const startY = 16 + Math.random() * 68;
+    const targetY = clamp(startY + (Math.random() - 0.5) * 30, 12, 88);
+    const duration = 10.5;
+    return {
+      id: uid('inc_'), kind,
+      x: startX, y: startY,
+      vx: (fromLeft ? 120 : -120) / duration, vy: (targetY - startY) / duration,
+      label: '¡Dron invade la señal!', color: '#8be9fd', importance: 3.4,
+      expiresAt: now + duration * 1000, caught: false, bornAt: now,
+    };
+  }
+  if (kind === 'sprinkler') {
+    const duration = 9;
+    return {
+      id: uid('inc_'), kind,
+      x: 16 + Math.random() * 68, y: 16 + Math.random() * 68,
+      vx: 0, vy: 0,
+      label: '¡Aspersores en marcha!', color: '#66d9ff', importance: 3.3,
+      expiresAt: now + duration * 1000, caught: false, bornAt: now,
+    };
+  }
+  if (kind === 'flare') {
+    const side = Math.floor(Math.random() * 4);
+    let x = 18 + Math.random() * 64;
+    let y = -13;
+    if (side === 1) y = 113;
+    else if (side === 2) { x = -13; y = 16 + Math.random() * 68; }
+    else if (side === 3) { x = 113; y = 16 + Math.random() * 68; }
+    return {
+      id: uid('inc_'), kind, x, y, vx: 0, vy: 0,
+      label: '¡Bengala en la grada!', color: '#ff6b35', importance: 3.5,
+      expiresAt: now + 10000, caught: false, bornAt: now,
+    };
+  }
+  if (kind === 'coach') {
+    // Entrenador cabreado: sale de su banquillo a protestar al área técnica.
+    const isTopBench = Math.random() > 0.5;
+    const startX = 40 + Math.random() * 20;
+    const startY = isTopBench ? -5.5 : 105.5;
+    return {
+      id: uid('inc_'), kind,
+      x: startX, y: startY,
+      vx: (Math.random() - 0.5) * 4,
+      vy: isTopBench ? 2.2 : -2.2,
+      label: '¡Entrenador fuera de sí!', color: '#9c27b0', importance: 2.5,
+      expiresAt: now + 7000, caught: false, bornAt: now,
+    };
+  }
+  // Fallback explícito: un tipo desconocido nunca debe disfrazarse de coach.
+  return spawnIncident(now, ['dog']);
 }
 
 function setBallOwner(sim: MatchSim, owner: EnginePlayer) {
@@ -448,6 +495,18 @@ export function updateMatchSim(
   const events: MatchEvent[] = [];
   const pace = tuning.pace;
 
+  // Los incidentes viven también durante un gol: antes este bloque quedaba
+  // después de un return y un perro podía congelarse con las patas corriendo.
+  for (let i = incidents.length - 1; i >= 0; i -= 1) {
+    const inc = incidents[i];
+    inc.x += inc.vx * dt;
+    inc.y += inc.vy * dt;
+    if (now >= inc.expiresAt || inc.x < -22 || inc.x > 122 || inc.y < -22 || inc.y > 122) incidents.splice(i, 1);
+  }
+  for (let i = moments.length - 1; i >= 0; i -= 1) {
+    if (now >= moments[i].expiresAt) moments.splice(i, 1);
+  }
+
   // ---- Fase de GOL ----
   if (sim.phase === 'goal') {
     if (now > sim.goalPauseUntil) {
@@ -504,21 +563,12 @@ export function updateMatchSim(
   // ---- Incidentes de grada (progresión por nivel) ----
   if (now > sim.nextIncidentAt) {
     if (tuning.incidentKinds.length > 0) {
-      incidents.push(spawnIncident(now, tuning.incidentKinds));
+      const incident = spawnIncident(now, tuning.incidentKinds);
+      incidents.push(incident);
+      events.push({ type: 'incident', x: incident.x, y: incident.y, label: incident.label });
     }
     // Gap con variación aleatoria; niveles altos = más caos
     sim.nextIncidentAt = now + tuning.incidentGap + Math.random() * tuning.incidentGap * 0.8;
-  }
-  for (let i = incidents.length - 1; i >= 0; i -= 1) {
-    const inc = incidents[i];
-    inc.x += inc.vx * dt;
-    inc.y += inc.vy * dt;
-    // Los límites cubren las 4 gradas (-20..120): si no, los incidentes de
-    // grada lateral se eliminarían nada más aparecer.
-    if (now >= inc.expiresAt || inc.x < -22 || inc.x > 122 || inc.y < -22 || inc.y > 122) incidents.splice(i, 1);
-  }
-  for (let i = moments.length - 1; i >= 0; i -= 1) {
-    if (now >= moments[i].expiresAt) moments.splice(i, 1);
   }
 
   const ball = sim.ball;
